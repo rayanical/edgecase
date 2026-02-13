@@ -112,7 +112,7 @@ npm run build   # Build content, bridge, and background bundles
 - `dist/` is required for runtime and is produced by `npm run build`.
 - If you change source files, reload the extension after rebuilding.
 
-## Product Positioning (Hiring Manager Friendly)
+## Product Positioning 
 
 This project demonstrates:
 - Browser extension engineering (MV3 service workers, content scripts, runtime messaging)
