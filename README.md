@@ -46,29 +46,37 @@ Edgecase is not a generic chatbot wrapper. It combines:
   - Anthropic
   - Gemini
 
+## Repository Layout
+
+- `/Users/rayan/Documents/Edgecase/extension`
+  - Actual Chrome extension source and build config
+- `/Users/rayan/Documents/Edgecase/README.md`
+  - Project overview and setup guide
+
 ## Architecture
 
-- `/Users/rayan/Documents/Edgecase/src/background/index.ts`
+- `/Users/rayan/Documents/Edgecase/extension/src/background/index.ts`
   - Settings/history persistence
   - Tab state (problem + code snapshot)
   - Unified stream manager via `ai` SDK
 
-- `/Users/rayan/Documents/Edgecase/src/content/index.tsx`
+- `/Users/rayan/Documents/Edgecase/extension/src/content/index.tsx`
   - Content bootstrap
   - Shadow DOM mount
   - Tailwind CSS injection into shadow root
   - Context and code snapshot sync
 
-- `/Users/rayan/Documents/Edgecase/src/content/pageBridge.ts`
+- `/Users/rayan/Documents/Edgecase/extension/src/content/pageBridge.ts`
   - Page-world editor extraction adapters
 
-- `/Users/rayan/Documents/Edgecase/src/widget/App.tsx`
+- `/Users/rayan/Documents/Edgecase/extension/src/widget/App.tsx`
   - React + shadcn-style UI composition
 
 ## Run Locally
 
 1. Install dependencies:
 ```bash
+cd extension
 npm install
 ```
 
@@ -81,7 +89,7 @@ npm run build
 - `chrome://extensions`
 - Enable `Developer mode`
 - Click `Load unpacked`
-- Select `/Users/rayan/Documents/Edgecase`
+- Select `/Users/rayan/Documents/Edgecase/extension`
 
 4. Visit:
 - `https://leetcode.com/problems/two-sum/`
@@ -93,6 +101,7 @@ You should see the `EC` launcher on supported pages.
 ## Development Commands
 
 ```bash
+cd extension
 npm run check   # TypeScript typecheck
 npm run build   # Build content, bridge, and background bundles
 ```
