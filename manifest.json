@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Edgecase",
+  "version": "0.2.0",
+  "description": "AI coding interview coach for LeetCode, NeetCode, and HackerRank problem pages.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://leetcode.com/*",
+    "https://*.leetcode.com/*",
+    "https://neetcode.io/*",
+    "https://*.neetcode.io/*",
+    "https://www.hackerrank.com/*",
+    "https://*.hackerrank.com/*",
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Edgecase"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://leetcode.com/*",
+        "https://*.leetcode.com/*",
+        "https://neetcode.io/*",
+        "https://*.neetcode.io/*",
+        "https://www.hackerrank.com/*",
+        "https://*.hackerrank.com/*"
+      ],
+      "js": [
+        "contentScript.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "dist/contentMain.js",
+        "dist/assets/*",
+        "dist/pageBridge.js"
+      ],
+      "matches": [
+        "https://leetcode.com/*",
+        "https://*.leetcode.com/*",
+        "https://neetcode.io/*",
+        "https://*.neetcode.io/*",
+        "https://www.hackerrank.com/*",
+        "https://*.hackerrank.com/*"
+      ]
+    }
+  ]
+}

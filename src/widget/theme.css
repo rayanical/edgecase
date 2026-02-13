@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:host,
+.edgecase-root {
+  --background: 220 6% 7%;
+  --foreground: 0 0% 96%;
+  --card: 220 6% 10%;
+  --card-foreground: 0 0% 96%;
+  --primary: 0 0% 96%;
+  --primary-foreground: 220 6% 8%;
+  --muted: 220 4% 16%;
+  --muted-foreground: 0 0% 78%;
+  --border: 220 4% 28%;
+  --input: 220 4% 28%;
+  --ring: 0 0% 92%;
+  --destructive: 0 0% 90%;
+  --destructive-foreground: 220 6% 8%;
+  --radius: 0.5rem;
+  color: hsl(var(--foreground));
+}
+
+.edgecase-root * {
+  box-sizing: border-box;
+}
+
+.edgecase-panel {
+  position: fixed;
+  z-index: 2147483647;
+  width: var(--panel-width, 420px);
+  height: var(--panel-height, 640px);
+  left: var(--panel-x, auto);
+  top: var(--panel-y, auto);
+  right: var(--panel-right, 20px);
+  bottom: var(--panel-bottom, 78px);
+}
+
+.edgecase-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.edgecase-scroll::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 999px;
+}
+
+.edgecase-resizer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  border-right: 1px solid hsl(var(--border));
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.edgecase-status-error {
+  border-style: dashed;
+}
+
+.edgecase-status-ok {
+  border-style: solid;
+}
