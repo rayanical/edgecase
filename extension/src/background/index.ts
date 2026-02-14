@@ -2,13 +2,15 @@ import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import type { ChatHistoryItem, CodeSnapshot, ProblemContext, Settings, TabState } from "../types/models";
+import type { ChatHistoryItem, CodeSnapshot, PersonaMode, ProblemContext, Settings, TabState } from "../types/models";
 import type { CancelStreamRequest, RpcRequest, StreamEvent, StreamRequest } from "../types/messages";
 
 const SETTINGS_KEY = "edgecaseSettings";
 const HISTORY_PREFIX = "edgecaseHistory:";
 const TAB_STATE_PREFIX = "edgecaseTabState:";
 const MAX_HISTORY_MESSAGES = 30;
+const FIXED_TEMPERATURE = 0.2;
+const FIXED_MAX_TOKENS = 4000;
 
 const DEFAULT_SETTINGS: Settings = {
   provider: "openai",
@@ -19,8 +21,14 @@ const DEFAULT_SETTINGS: Settings = {
   coachingStyle: "interviewer",
   responseStyle: "balanced",
   systemPromptOverride: "",
+  tokenCounter: {
+    totalTokens: 0,
+    promptTokens: 0,
+    completionTokens: 0
+  },
   ui: {
-    panelRectByHost: {}
+    panelRectByHost: {},
+    personaByHost: {}
   }
 };
 
@@ -44,7 +52,7 @@ class StreamManager {
     const codeSnapshot = request.codeSnapshot || tabState.codeSnapshot;
     const history = await getHistory(request.tabId);
 
-    const systemPrompt = buildSystemPrompt(context, codeSnapshot, settings);
+    const systemPrompt = buildSystemPrompt(context, codeSnapshot, settings, request.personaMode);
     const messages = [
       ...history.map((item) => ({ role: item.role, content: item.content })),
       { role: "user" as const, content: request.text }
@@ -58,8 +66,8 @@ class StreamManager {
         model,
         system: systemPrompt,
         messages,
-        temperature: settings.temperature,
-        maxTokens: settings.maxTokens,
+        temperature: FIXED_TEMPERATURE,
+        maxTokens: FIXED_MAX_TOKENS,
         abortSignal: controller.signal
       });
 
@@ -68,6 +76,8 @@ class StreamManager {
         response += delta;
         this.emit(port, { type: "STREAM_CHUNK", requestId: request.requestId, chunk: delta });
       }
+      const usage = normalizeTokenUsage(await result.usage);
+      await incrementTokenCounter(usage);
 
       const nextHistory = trimHistory([
         ...history,
@@ -187,13 +197,13 @@ chrome.runtime.onMessage.addListener((message: RpcRequest, sender, sendResponse)
   return true;
 });
 
-function buildSystemPrompt(context: ProblemContext | null, code: CodeSnapshot | null, settings: Settings): string {
-  const coachingInstruction =
-    settings.coachingStyle === "collaborative"
-      ? "You are a collaborative coding coach. Give practical guidance and direct next steps."
-      : settings.coachingStyle === "socratic"
-        ? "You are a Socratic coding coach. Ask concise guiding questions before giving direct answers."
-        : "You are a mock technical interviewer and reasoning coach. Use progressive hints and avoid full solutions unless explicitly requested.";
+function buildSystemPrompt(
+  context: ProblemContext | null,
+  code: CodeSnapshot | null,
+  settings: Settings,
+  personaMode?: PersonaMode
+): string {
+  const coachingInstruction = resolveCoachingInstruction(settings.coachingStyle, personaMode);
 
   const responseInstruction =
     settings.responseStyle === "concise"
@@ -238,6 +248,23 @@ function buildSystemPrompt(context: ProblemContext | null, code: CodeSnapshot | 
     .join("\n\n");
 }
 
+function resolveCoachingInstruction(style: Settings["coachingStyle"], personaMode?: PersonaMode): string {
+  if (personaMode === "collaborator") {
+    return "You are a collaborative coding partner. Be direct, practical, and unblock quickly with concise snippets when useful. If user explicitly asks for full solution, provide it.";
+  }
+  if (personaMode === "interviewer") {
+    return "You are a strict technical interviewer. Use Socratic coaching, ask clarifying questions, and avoid full code unless user explicitly asks for full solution.";
+  }
+
+  if (style === "collaborative") {
+    return "You are a collaborative coding coach. Give practical guidance and direct next steps.";
+  }
+  if (style === "socratic") {
+    return "You are a Socratic coding coach. Ask concise guiding questions before giving direct answers.";
+  }
+  return "You are a mock technical interviewer and reasoning coach. Use progressive hints and avoid full solutions unless explicitly requested.";
+}
+
 function createModel(settings: Settings) {
   if (settings.provider === "openai") {
     const openai = createOpenAI({ apiKey: settings.apiKey });
@@ -273,9 +300,21 @@ async function getSettings(): Promise<Settings> {
   return {
     ...DEFAULT_SETTINGS,
     ...saved,
+    tokenCounter: {
+      ...DEFAULT_SETTINGS.tokenCounter,
+      ...((saved as Partial<Settings>).tokenCounter || {})
+    },
     ui: {
       ...DEFAULT_SETTINGS.ui,
-      ...(saved.ui || {})
+      ...(saved.ui || {}),
+      panelRectByHost: {
+        ...DEFAULT_SETTINGS.ui.panelRectByHost,
+        ...((saved.ui || {}).panelRectByHost || {})
+      },
+      personaByHost: {
+        ...DEFAULT_SETTINGS.ui.personaByHost,
+        ...((saved.ui || {}).personaByHost || {})
+      }
     }
   };
 }
@@ -288,11 +327,15 @@ async function saveSettings(partial: Partial<Settings>): Promise<Settings> {
     provider: normalizeProvider(partial.provider ?? current.provider),
     model: (partial.model ?? current.model).trim(),
     apiKey: (partial.apiKey ?? current.apiKey).trim(),
-    temperature: clampNumber(partial.temperature ?? current.temperature, 0, 1, 0.2),
-    maxTokens: clampNumber(partial.maxTokens ?? current.maxTokens, 100, 4000, 700),
+    temperature: FIXED_TEMPERATURE,
+    maxTokens: FIXED_MAX_TOKENS,
     coachingStyle: normalizeCoachingStyle(partial.coachingStyle ?? current.coachingStyle),
     responseStyle: normalizeResponseStyle(partial.responseStyle ?? current.responseStyle),
     systemPromptOverride: (partial.systemPromptOverride ?? current.systemPromptOverride).trim(),
+    tokenCounter: {
+      ...current.tokenCounter,
+      ...(partial.tokenCounter || {})
+    },
     ui: {
       ...current.ui,
       ...(partial.ui || {})
@@ -301,6 +344,43 @@ async function saveSettings(partial: Partial<Settings>): Promise<Settings> {
 
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   return next;
+}
+
+type TokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+function normalizeTokenUsage(raw: unknown): TokenUsage {
+  const usage = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const promptTokens = toNonNegativeInt(usage.promptTokens) || toNonNegativeInt(usage.inputTokens);
+  const completionTokens = toNonNegativeInt(usage.completionTokens) || toNonNegativeInt(usage.outputTokens);
+  const directTotal = toNonNegativeInt(usage.totalTokens) || toNonNegativeInt(usage.total);
+  const totalTokens = directTotal || promptTokens + completionTokens;
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens
+  };
+}
+
+function toNonNegativeInt(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+async function incrementTokenCounter(usage: TokenUsage): Promise<void> {
+  const settings = await getSettings();
+  const next = {
+    totalTokens: Math.max(0, settings.tokenCounter.totalTokens + (usage.totalTokens || 0)),
+    promptTokens: Math.max(0, settings.tokenCounter.promptTokens + (usage.promptTokens || 0)),
+    completionTokens: Math.max(0, settings.tokenCounter.completionTokens + (usage.completionTokens || 0))
+  };
+  await saveSettings({ tokenCounter: next });
 }
 
 async function getHistory(tabId: number): Promise<ChatHistoryItem[]> {

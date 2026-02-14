@@ -1,4 +1,4 @@
-import type { ChatHistoryItem, CodeSnapshot, ProblemContext, Settings, TabState } from "./models";
+import type { ChatHistoryItem, CodeSnapshot, PersonaMode, ProblemContext, Settings, TabState } from "./models";
 
 export type RpcRequest =
   | { type: "GET_SETTINGS" }
@@ -31,6 +31,7 @@ export type StreamRequest = {
   text: string;
   context: ProblemContext | null;
   codeSnapshot: CodeSnapshot | null;
+  personaMode?: PersonaMode;
 };
 
 export type CancelStreamRequest = {

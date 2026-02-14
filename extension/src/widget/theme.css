@@ -4,19 +4,19 @@
 
 :host,
 .edgecase-root {
-  --background: 220 6% 7%;
-  --foreground: 0 0% 96%;
-  --card: 220 6% 10%;
-  --card-foreground: 0 0% 96%;
+  --background: 240 6% 9%;
+  --foreground: 0 0% 95%;
+  --card: 240 5% 12%;
+  --card-foreground: 0 0% 95%;
   --primary: 0 0% 96%;
-  --primary-foreground: 220 6% 8%;
-  --muted: 220 4% 16%;
-  --muted-foreground: 0 0% 78%;
-  --border: 220 4% 28%;
-  --input: 220 4% 28%;
+  --primary-foreground: 240 6% 10%;
+  --muted: 240 4% 18%;
+  --muted-foreground: 240 4% 73%;
+  --border: 240 4% 26%;
+  --input: 240 4% 26%;
   --ring: 0 0% 92%;
   --destructive: 0 0% 90%;
-  --destructive-foreground: 220 6% 8%;
+  --destructive-foreground: 240 6% 8%;
   --radius: 0.5rem;
   color: hsl(var(--foreground));
 }
@@ -34,6 +34,7 @@
   top: var(--panel-y, auto);
   right: var(--panel-right, 20px);
   bottom: var(--panel-bottom, 78px);
+  animation: edgecase-fade-in 140ms ease-out;
 }
 
 .edgecase-scroll::-webkit-scrollbar {
@@ -62,4 +63,49 @@
 
 .edgecase-status-ok {
   border-style: solid;
+}
+
+@keyframes edgecase-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.edgecase-markdown p {
+  margin: 0.2rem 0;
+}
+
+.edgecase-markdown p:first-child {
+  margin-top: 0;
+}
+
+.edgecase-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.edgecase-markdown ul,
+.edgecase-markdown ol {
+  margin: 0.35rem 0 0.35rem 1rem;
+  padding: 0;
+}
+
+.edgecase-markdown li {
+  margin: 0.15rem 0;
+}
+
+.edgecase-markdown pre {
+  margin: 0.35rem 0 0.75rem;
+}
+
+.edgecase-markdown pre:last-child {
+  margin-bottom: 1rem;
+}
+
+.edgecase-footer {
+  flex: 0 0 auto;
 }

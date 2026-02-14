@@ -9,7 +9,7 @@ import type {
   StreamEvent,
   StreamRequest
 } from "../types/messages";
-import type { ChatHistoryItem, CodeSnapshot, ProblemContext, Settings, TabState } from "../types/models";
+import type { ChatHistoryItem, CodeSnapshot, PersonaMode, ProblemContext, Settings, TabState } from "../types/models";
 import { detectDomEditorSnapshot, detectTextareaSnapshot, installBridgeListener } from "../code-context/adapters";
 import { extractProblemContext } from "../detection/parsers";
 import { contextSignature } from "../detection/shared";
@@ -22,7 +22,7 @@ const DEFAULT_RECT: PanelRect = {
   x: Math.max(12, window.innerWidth - 440),
   y: 48,
   width: Math.min(420, window.innerWidth - 24),
-  height: Math.min(760, window.innerHeight - 28)
+  height: Math.min(640, window.innerHeight - 28)
 };
 
 const hostKey = location.hostname;
@@ -37,6 +37,13 @@ const state = {
   codeSnapshot: null as CodeSnapshot | null,
   history: [] as ChatHistoryItem[],
   settings: null as Settings | null,
+  personaMode: "interviewer" as PersonaMode,
+  timer: {
+    key: null as string | null,
+    elapsedMs: 0,
+    isRunning: false,
+    startedAtMs: null as number | null
+  },
   sending: false,
   requestId: null as string | null
 };
@@ -46,6 +53,8 @@ let port: chrome.runtime.Port | null = null;
 let lastContextSignature = "";
 let mutationTimer: number | null = null;
 let urlSnapshot = location.href;
+let tickTimer: number | null = null;
+let lastTimerFlushAt = 0;
 
 void bootstrap();
 
@@ -66,6 +75,7 @@ async function bootstrap() {
   installPageBridge();
   installObservers();
   connectPort();
+  startTickLoop();
 
   await publishContextIfChanged(true);
   await publishCodeSnapshot(detectDomEditorSnapshot() || detectTextareaSnapshot());
@@ -101,6 +111,9 @@ function mountApp() {
         sending={state.sending}
         codeSnapshot={state.codeSnapshot}
         settings={state.settings}
+        personaMode={state.personaMode}
+        timerSeconds={Math.floor(getTimerElapsedMs() / 1000)}
+        timerRunning={state.timer.isRunning}
         onToggleOpen={() => {
           state.isOpen = !state.isOpen;
           rerender();
@@ -111,6 +124,26 @@ function mountApp() {
         }}
         onStartDrag={startDrag}
         onStartResize={startResize}
+        onTogglePersona={(mode) => {
+          state.personaMode = mode;
+          if (state.settings) {
+            state.settings = {
+              ...state.settings,
+              coachingStyle: mode === "collaborator" ? "collaborative" : "interviewer"
+            };
+          }
+          void saveSettings({ coachingStyle: mode === "collaborator" ? "collaborative" : "interviewer" });
+          persistUiPrefs();
+          rerender();
+        }}
+        onTimerToggle={() => {
+          toggleTimer();
+          rerender();
+        }}
+        onTimerReset={() => {
+          resetTimer();
+          rerender();
+        }}
         onRescan={() => {
           void publishContextIfChanged(true);
         }}
@@ -174,6 +207,7 @@ function connectPort() {
       state.statusText = "Ready";
       state.statusType = "ok";
       rerender();
+      void refreshSettings().then(() => rerender());
       return;
     }
 
@@ -225,7 +259,8 @@ async function sendMessage(text: string) {
     requestId: state.requestId,
     text,
     context: state.context,
-    codeSnapshot: state.codeSnapshot
+    codeSnapshot: state.codeSnapshot,
+    personaMode: state.personaMode
   };
 
   port.postMessage(payload);
@@ -261,6 +296,11 @@ async function saveSettings(next: Partial<Settings>): Promise<void> {
   state.statusText = "Settings saved";
   state.statusType = "ok";
   rerender();
+}
+
+async function refreshSettings(): Promise<void> {
+  const response = await rpc({ type: "GET_SETTINGS" });
+  state.settings = response.settings;
 }
 
 async function loadHistory() {
@@ -372,6 +412,7 @@ async function publishContextIfChanged(force: boolean) {
   state.context = context;
   state.statusText = context.confidence >= 0.7 ? "Ready" : "Partial context detected";
   state.statusType = context.confidence >= 0.7 ? "ok" : "warn";
+  await restoreOrInitTimerForContext(context);
   await rpc({ type: "CONTEXT_UPDATE", context });
   rerender();
 }
@@ -381,6 +422,7 @@ function applyPersistedUiPrefs(settings: Settings) {
   if (rect) {
     state.panelRect = clampRect(rect);
   }
+  state.personaMode = settings.ui.personaByHost?.[hostKey] || "interviewer";
 }
 
 function persistUiPrefs() {
@@ -393,6 +435,10 @@ function persistUiPrefs() {
     panelRectByHost: {
       ...state.settings.ui.panelRectByHost,
       [hostKey]: state.panelRect
+    },
+    personaByHost: {
+      ...(state.settings.ui.personaByHost || {}),
+      [hostKey]: state.personaMode
     }
   };
 
@@ -441,8 +487,8 @@ function startResize(event: React.MouseEvent<HTMLDivElement>) {
   const move = (ev: MouseEvent) => {
     const next = {
       ...initial,
-      width: Math.max(320, initial.width + (ev.clientX - startX)),
-      height: Math.max(340, initial.height + (ev.clientY - startY))
+      width: Math.max(405, initial.width + (ev.clientX - startX)),
+      height: Math.max(546, initial.height + (ev.clientY - startY))
     };
 
     state.panelRect = clampRect(next);
@@ -460,11 +506,11 @@ function startResize(event: React.MouseEvent<HTMLDivElement>) {
 }
 
 function clampRect(rect: PanelRect): PanelRect {
-  const maxWidth = Math.max(320, window.innerWidth - 16);
-  const maxHeight = Math.max(300, window.innerHeight - 16);
+  const maxWidth = Math.min(980, Math.max(405, window.innerWidth - 16));
+  const maxHeight = Math.min(980, Math.max(546, window.innerHeight - 16));
 
-  const width = Math.min(rect.width, maxWidth);
-  const height = Math.min(rect.height, maxHeight);
+  const width = Math.max(405, Math.min(rect.width, maxWidth));
+  const height = Math.max(546, Math.min(rect.height, maxHeight));
 
   const x = Math.min(Math.max(8, rect.x), Math.max(8, window.innerWidth - width - 8));
   const y = Math.min(Math.max(8, rect.y), Math.max(8, window.innerHeight - height - 8));
@@ -480,6 +526,107 @@ function hydrateTabState(tabState: TabState) {
     state.statusType = state.context.confidence >= 0.7 ? "ok" : "warn";
     lastContextSignature = contextSignature(state.context);
   }
+}
+
+function startTickLoop() {
+  if (tickTimer) {
+    window.clearInterval(tickTimer);
+  }
+  tickTimer = window.setInterval(() => {
+    if (!state.timer.isRunning) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastTimerFlushAt > 5000) {
+      lastTimerFlushAt = now;
+      void saveTimerState();
+    }
+    rerender();
+  }, 1000);
+}
+
+function getTimerElapsedMs(): number {
+  if (!state.timer.isRunning || state.timer.startedAtMs == null) {
+    return state.timer.elapsedMs;
+  }
+  return state.timer.elapsedMs + Math.max(0, Date.now() - state.timer.startedAtMs);
+}
+
+function toggleTimer() {
+  if (state.timer.isRunning) {
+    state.timer.elapsedMs = getTimerElapsedMs();
+    state.timer.isRunning = false;
+    state.timer.startedAtMs = null;
+  } else {
+    state.timer.startedAtMs = Date.now();
+    state.timer.isRunning = true;
+  }
+  void saveTimerState();
+}
+
+function resetTimer() {
+  state.timer.elapsedMs = 0;
+  state.timer.startedAtMs = Date.now();
+  state.timer.isRunning = true;
+  void saveTimerState();
+}
+
+function timerStorageKey(problemKey: string): string {
+  return `edgecaseTimer:${problemKey}`;
+}
+
+function normalizeProblemKey(context: ProblemContext): string | null {
+  try {
+    const parsed = new URL(context.url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreOrInitTimerForContext(context: ProblemContext) {
+  const key = normalizeProblemKey(context);
+  if (!key) {
+    return;
+  }
+
+  if (state.timer.key !== key) {
+    state.timer.key = key;
+    const storageKey = timerStorageKey(key);
+    const result = await chrome.storage.session.get(storageKey);
+    const saved = result[storageKey] as
+      | { elapsedMs?: number; isRunning?: boolean; startedAtMs?: number | null }
+      | undefined;
+
+    state.timer.elapsedMs = Math.max(0, saved?.elapsedMs || 0);
+    state.timer.isRunning = Boolean(saved?.isRunning);
+    state.timer.startedAtMs = state.timer.isRunning ? saved?.startedAtMs || Date.now() : null;
+  }
+
+  if (context.confidence >= 0.7 && !state.timer.isRunning) {
+    state.timer.isRunning = true;
+    state.timer.startedAtMs = Date.now();
+    await saveTimerState();
+  }
+}
+
+async function saveTimerState() {
+  if (!state.timer.key) {
+    return;
+  }
+  const elapsedMs = getTimerElapsedMs();
+  const startedAtMs = state.timer.isRunning ? Date.now() : null;
+
+  state.timer.elapsedMs = elapsedMs;
+  state.timer.startedAtMs = startedAtMs;
+
+  await chrome.storage.session.set({
+    [timerStorageKey(state.timer.key)]: {
+      elapsedMs,
+      isRunning: state.timer.isRunning,
+      startedAtMs
+    }
+  });
 }
 
 function createRequestId(): string {
