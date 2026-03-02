@@ -74,23 +74,30 @@
   }
 
   function readMonacoVisibleText(): string | null {
-    const lineNodes = Array.from(
-      document.querySelectorAll(".monaco-editor .view-lines .view-line, .monaco-editor .view-line")
-    );
-    if (lineNodes.length === 0) {
-      return null;
+    const editors = queryAllDeep(".monaco-editor");
+    let best = "";
+
+    for (const editor of editors) {
+      const lineNodes = Array.from(editor.querySelectorAll(".view-lines .view-line, .view-line"));
+      if (lineNodes.length === 0) {
+        continue;
+      }
+      const candidate = lineNodes
+        .map((node) => (node.textContent || "").replace(/\u00a0/g, " "))
+        .join("\n")
+        .trim();
+      if (candidate.length > best.length) {
+        best = candidate;
+      }
     }
 
-    const lines = lineNodes
-      .map((node) => (node.textContent || "").replace(/\u00a0/g, " "))
-      .join("\n")
-      .trim();
-
-    return lines || null;
+    return best || null;
   }
 
   function readMonacoInputAreaText(): string | null {
-    const areas = Array.from(document.querySelectorAll(".monaco-editor textarea.inputarea")) as HTMLTextAreaElement[];
+    const areas = queryAllDeep(".monaco-editor textarea.inputarea").filter(
+      (node): node is HTMLTextAreaElement => node instanceof HTMLTextAreaElement
+    );
     if (areas.length === 0) {
       return null;
     }
@@ -227,13 +234,54 @@
     }
   }
 
-  window.addEventListener("message", (event) => {
-    const message = event.data;
-    if (!message || message.source !== "edgecase-widget") {
-      return;
+  function queryAllDeep(selector: string): Element[] {
+    const results: Element[] = [];
+    for (const root of collectQueryRoots()) {
+      results.push(...Array.from(root.querySelectorAll(selector)));
     }
-    if (message.type === "REQUEST_CODE_SNAPSHOT") {
-      scan();
+    return results;
+  }
+
+  function collectQueryRoots(): ParentNode[] {
+    const roots: ParentNode[] = [];
+    const queue: ParentNode[] = [document];
+    const seen = new Set<ParentNode>();
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (seen.has(current)) {
+        continue;
+      }
+      seen.add(current);
+      roots.push(current);
+
+      const elements = Array.from(current.querySelectorAll("*"));
+      for (const element of elements) {
+        const shadow = (element as HTMLElement).shadowRoot;
+        if (shadow && !seen.has(shadow)) {
+          queue.push(shadow);
+        }
+      }
+    }
+
+    return roots;
+  }
+
+  function isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+  }
+
+  window.addEventListener("message", (event) => {
+    try {
+      const message = event.data;
+      if (!isObjectRecord(message) || message.source !== "edgecase-widget") {
+        return;
+      }
+      if (message.type === "REQUEST_CODE_SNAPSHOT") {
+        scan();
+      }
+    } catch (error) {
+      console.debug("[Edgecase][bridge] pageBridge message handler failed", error);
     }
   });
 

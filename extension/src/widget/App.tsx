@@ -197,6 +197,7 @@ export function App(props: AppProps) {
 
   const platformLabel = props.context ? formatPlatformLabel(props.context) : "No platform detected";
   const timerText = formatTimer(props.timerSeconds);
+  const centeredChatError = getCenteredChatError(props.statusType, props.statusText);
   const launcherLogoSrc = chrome.runtime.getURL("edgecase-logo-gray.svg");
   const sendQuickAction = (prompt: string) => {
     props.onSend(prompt);
@@ -310,8 +311,22 @@ export function App(props: AppProps) {
                     const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
                     stickToBottomRef.current = distanceFromBottom < 56;
                   }}
-                  className="edgecase-scroll flex-1 overflow-auto px-3 py-2">
-                  {props.history.length === 0 ? (
+                  className="edgecase-scroll relative flex-1 overflow-auto px-3 py-2">
+                  {centeredChatError ? (
+                    <div className="flex h-full items-center justify-center px-2">
+                      <div className="w-full max-w-[360px] rounded-xl border border-border/80 bg-card/90 p-4 text-center shadow-lg">
+                        <p className="text-sm font-semibold text-foreground">{centeredChatError.title}</p>
+                        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{centeredChatError.description}</p>
+                        {centeredChatError.kind === "missing_key" ? (
+                          <div className="mt-3">
+                            <Button variant="ghost" size="sm" className="rounded-full border border-border/70" onClick={() => setShowSettingsSheet(true)}>
+                              Open Settings
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : props.history.length === 0 ? (
                     <div className="flex h-full flex-col items-center justify-center gap-3">
                       <div
                         className={`edgecase-status-${props.statusType} inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground`}>
@@ -472,6 +487,41 @@ function formatTimer(totalSeconds: number): string {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(Math.max(0, Math.floor(value || 0)));
+}
+
+type CenteredChatError = {
+  title: string;
+  description: string;
+  kind: "missing_key" | "api_error";
+};
+
+function getCenteredChatError(statusType: AppProps["statusType"], statusText: string): CenteredChatError | null {
+  if (statusType !== "error" || !statusText) {
+    return null;
+  }
+  const message = statusText.replace(/^Error:\s*/i, "").trim();
+  if (!message) {
+    return null;
+  }
+  if (/missing api key/i.test(message)) {
+    return {
+      title: "Missing API Key",
+      description: "Add your provider API key in Settings to start chatting.",
+      kind: "missing_key"
+    };
+  }
+  if (isLikelyApiErrorMessage(message)) {
+    return {
+      title: "API Request Failed",
+      description: message,
+      kind: "api_error"
+    };
+  }
+  return null;
+}
+
+function isLikelyApiErrorMessage(message: string): boolean {
+  return /(api|provider|model|invalid key|unauthorized|forbidden|rate limit|quota|429|401|403|bad request)/i.test(message);
 }
 
 function MessageMarkdown({ text }: { text: string }) {

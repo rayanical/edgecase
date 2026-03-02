@@ -76,7 +76,11 @@ class StreamManager {
         response += delta;
         this.emit(port, { type: "STREAM_CHUNK", requestId: request.requestId, chunk: delta });
       }
-      const usage = normalizeTokenUsage(await result.usage);
+      const rawUsage = await resolveStreamUsage(result.usage);
+      const usage = normalizeTokenUsage(rawUsage, {
+        promptText: serializePromptForTokenEstimate(systemPrompt, messages),
+        completionText: response
+      });
       await incrementTokenCounter(usage);
 
       const nextHistory = trimHistory([
@@ -132,12 +136,31 @@ chrome.runtime.onConnect.addListener((port) => {
     return;
   }
 
-  port.onMessage.addListener(async (message: StreamRequest | CancelStreamRequest) => {
-    if (message.type === "SEND_CHAT_STREAM") {
-      await streamManager.start(port, message);
-    }
-    if (message.type === "CANCEL_CHAT_STREAM") {
-      streamManager.cancel(message);
+  port.onMessage.addListener(async (message: unknown) => {
+    try {
+      if (isStreamRequest(message)) {
+        await streamManager.start(port, message);
+        return;
+      }
+      if (isCancelStreamRequest(message)) {
+        streamManager.cancel(message);
+        return;
+      }
+      console.debug("[Edgecase][stream] Ignoring malformed port message", message);
+    } catch (error) {
+      if (isStreamRequest(message)) {
+        const safeError = normalizeStreamError(error);
+        try {
+          port.postMessage({
+            type: "STREAM_ERROR",
+            requestId: message.requestId,
+            error: safeError
+          } satisfies StreamEvent);
+        } catch {
+          // Port can disconnect while emitting stream error.
+        }
+      }
+      console.error("[Edgecase][stream] Port message handling failed", error);
     }
   });
 });
@@ -204,6 +227,10 @@ function buildSystemPrompt(
   personaMode?: PersonaMode
 ): string {
   const coachingInstruction = resolveCoachingInstruction(settings.coachingStyle, personaMode);
+  const contextDirective =
+    "CRITICAL: Problem context is already integrated below. UNDER NO CIRCUMSTANCES should you ask the user to paste or restate the problem description when context is present. Read and use the context block first.";
+  const codeDirective =
+    "CRITICAL: You are directly integrated into the user's IDE. You ALREADY have their live code below. UNDER NO CIRCUMSTANCES should you ask the user to paste their code or explain what they have written. Read the snapshot.";
 
   const responseInstruction =
     settings.responseStyle === "concise"
@@ -214,6 +241,7 @@ function buildSystemPrompt(
 
   const contextText = context
     ? [
+        contextDirective,
         `Site: ${context.site}`,
         `URL: ${context.url}`,
         `Title: ${context.title || "Unknown"}`,
@@ -229,10 +257,11 @@ function buildSystemPrompt(
         "",
         `Extraction Confidence: ${Math.round(context.confidence * 100)}%`
       ].join("\n")
-    : "No parsed problem context was found. Ask user to paste statement if needed.";
+    : "No parsed problem context was found. Ask one concise clarifying question only if needed.";
 
   const codeText = code?.code?.trim()
     ? [
+        codeDirective,
         "Current Code Snapshot:",
         `Source: ${code.source}`,
         `Language: ${code.language || "unknown"}`,
@@ -241,7 +270,7 @@ function buildSystemPrompt(
         code.code,
         "```"
       ].join("\n")
-    : "No code snapshot available yet.";
+    : "No code snapshot available yet. Ask one concise clarifying question only if required to proceed.";
 
   return [coachingInstruction, responseInstruction, settings.systemPromptOverride.trim(), contextText, codeText]
     .filter(Boolean)
@@ -249,20 +278,29 @@ function buildSystemPrompt(
 }
 
 function resolveCoachingInstruction(style: Settings["coachingStyle"], personaMode?: PersonaMode): string {
+  const base = [
+    "You are a Senior Staff Engineer conducting a technical interview and coaching session.",
+    'Never provide a complete algorithmic solution or full final code unless the user message includes the exact phrase: "I explicitly want the complete solution now".',
+    "Default to Socratic questioning and progressive hints.",
+    "Point to likely bug locations using concrete line numbers or tight line ranges from the provided snapshot, but do not rewrite the line unless the override phrase is present.",
+    "Call out time/space complexity tradeoffs and explain why one approach is favored.",
+    "If context or code is present in this prompt, do not ask the user to paste or restate it."
+  ].join(" ");
+
   if (personaMode === "collaborator") {
-    return "You are a collaborative coding partner. Be direct, practical, and unblock quickly with concise snippets when useful. If user explicitly asks for full solution, provide it.";
+    return `${base} Collaborator mode: be direct and practical, but keep the same no-full-solution boundary unless override phrase is present.`;
   }
   if (personaMode === "interviewer") {
-    return "You are a strict technical interviewer. Use Socratic coaching, ask clarifying questions, and avoid full code unless user explicitly asks for full solution.";
+    return `${base} Interviewer mode: keep questions sharp and evaluative, and prioritize reasoning over answers.`;
   }
 
   if (style === "collaborative") {
-    return "You are a collaborative coding coach. Give practical guidance and direct next steps.";
+    return `${base} Collaborative style: practical, concise next steps without giving away complete solutions.`;
   }
   if (style === "socratic") {
-    return "You are a Socratic coding coach. Ask concise guiding questions before giving direct answers.";
+    return `${base} Socratic style: lead with concise guiding questions before direct hints.`;
   }
-  return "You are a mock technical interviewer and reasoning coach. Use progressive hints and avoid full solutions unless explicitly requested.";
+  return `${base} Interviewer style: structured interview guidance with progressive hints.`;
 }
 
 function createModel(settings: Settings) {
@@ -352,12 +390,22 @@ type TokenUsage = {
   totalTokens: number;
 };
 
-function normalizeTokenUsage(raw: unknown): TokenUsage {
+function normalizeTokenUsage(
+  raw: unknown,
+  fallback?: { promptText: string; completionText: string }
+): TokenUsage {
   const usage = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const promptTokens = toNonNegativeInt(usage.promptTokens) || toNonNegativeInt(usage.inputTokens);
-  const completionTokens = toNonNegativeInt(usage.completionTokens) || toNonNegativeInt(usage.outputTokens);
-  const directTotal = toNonNegativeInt(usage.totalTokens) || toNonNegativeInt(usage.total);
-  const totalTokens = directTotal || promptTokens + completionTokens;
+  let promptTokens = toNonNegativeInt(usage.promptTokens) || toNonNegativeInt(usage.inputTokens);
+  let completionTokens = toNonNegativeInt(usage.completionTokens) || toNonNegativeInt(usage.outputTokens);
+  let directTotal = toNonNegativeInt(usage.totalTokens) || toNonNegativeInt(usage.total);
+
+  if (!hasUsageValues(promptTokens, completionTokens, directTotal) && fallback) {
+    promptTokens = estimateTokens(fallback.promptText);
+    completionTokens = estimateTokens(fallback.completionText);
+    directTotal = promptTokens + completionTokens;
+  }
+
+  const totalTokens = Math.max(directTotal, promptTokens + completionTokens);
 
   return {
     promptTokens,
@@ -375,12 +423,68 @@ function toNonNegativeInt(value: unknown): number {
 
 async function incrementTokenCounter(usage: TokenUsage): Promise<void> {
   const settings = await getSettings();
+  const previous = settings.tokenCounter;
+  console.debug("[Edgecase][tokens] Merge start", { previous, increment: usage });
   const next = {
-    totalTokens: Math.max(0, settings.tokenCounter.totalTokens + (usage.totalTokens || 0)),
-    promptTokens: Math.max(0, settings.tokenCounter.promptTokens + (usage.promptTokens || 0)),
-    completionTokens: Math.max(0, settings.tokenCounter.completionTokens + (usage.completionTokens || 0))
+    totalTokens: Math.max(0, previous.totalTokens + (usage.totalTokens || 0)),
+    promptTokens: Math.max(0, previous.promptTokens + (usage.promptTokens || 0)),
+    completionTokens: Math.max(0, previous.completionTokens + (usage.completionTokens || 0))
   };
+  console.debug("[Edgecase][tokens] Merge result", { previous, increment: usage, next });
   await saveSettings({ tokenCounter: next });
+}
+
+async function resolveStreamUsage(
+  usagePromise: Promise<unknown> | unknown,
+  timeoutMs = 1200
+): Promise<unknown> {
+  if (!usagePromise || typeof (usagePromise as Promise<unknown>).then !== "function") {
+    return usagePromise;
+  }
+  try {
+    const usage = await Promise.race([
+      usagePromise as Promise<unknown>,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
+    ]);
+    if (usage === null) {
+      console.debug("[Edgecase][tokens] Usage resolution timed out");
+    }
+    return usage;
+  } catch (error) {
+    console.debug("[Edgecase][tokens] Usage resolution failed", error);
+    return undefined;
+  }
+}
+
+function serializePromptForTokenEstimate(
+  systemPrompt: string,
+  messages: Array<{ role: "user" | "assistant"; content: string }>
+): string {
+  const serializedMessages = messages.map((message) => `${message.role}: ${message.content}`).join("\n");
+  return `${systemPrompt}\n${serializedMessages}`.trim();
+}
+
+function hasUsageValues(promptTokens: number, completionTokens: number, directTotal: number): boolean {
+  return promptTokens > 0 || completionTokens > 0 || directTotal > 0;
+}
+
+function estimateTokens(text: string): number {
+  if (!text.trim()) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStreamRequest(message: unknown): message is StreamRequest {
+  return isObjectRecord(message) && message.type === "SEND_CHAT_STREAM";
+}
+
+function isCancelStreamRequest(message: unknown): message is CancelStreamRequest {
+  return isObjectRecord(message) && message.type === "CANCEL_CHAT_STREAM";
 }
 
 async function getHistory(tabId: number): Promise<ChatHistoryItem[]> {
