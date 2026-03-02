@@ -117,6 +117,7 @@ export function App(props: AppProps) {
   const [manualCode, setManualCode] = useState("");
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const actionsContainerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const lastErrorToastRef = useRef("");
 
@@ -198,11 +199,34 @@ export function App(props: AppProps) {
   const platformLabel = props.context ? formatPlatformLabel(props.context) : "No platform detected";
   const timerText = formatTimer(props.timerSeconds);
   const centeredChatError = getCenteredChatError(props.statusType, props.statusText);
+  const inputPlaceholderText =
+    props.personaMode === "collaborator"
+      ? "Stuck? Let's figure this out together..."
+      : "Explain your approach, or ask for a hint...";
   const launcherLogoSrc = chrome.runtime.getURL("edgecase-logo-gray.svg");
   const sendQuickAction = (prompt: string) => {
     props.onSend(prompt);
     setShowQuickActions(false);
   };
+
+  useEffect(() => {
+    if (!showQuickActions) {
+      return;
+    }
+
+    const onPointerDown = (event: MouseEvent) => {
+      const path = event.composedPath();
+      if (actionsContainerRef.current && path.includes(actionsContainerRef.current)) {
+        return;
+      }
+      setShowQuickActions(false);
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+    };
+  }, [showQuickActions]);
 
   return (
     <div className="edgecase-root">
@@ -333,7 +357,7 @@ export function App(props: AppProps) {
                         {statusIcon}
                         <span>{props.statusText}</span>
                       </div>
-                      <p className="text-center text-xs text-muted-foreground">Start by asking for a hint or approach check.</p>
+                      <p className="text-center text-xs text-muted-foreground">Use Actions for quick prompts or ask your next question.</p>
                       <div className="flex flex-wrap justify-center gap-2">
                         {QUICK_ACTIONS.map((item) => (
                           <Button key={item.label} variant="ghost" size="sm" className="rounded-full" onClick={() => sendQuickAction(item.prompt)}>
@@ -362,7 +386,7 @@ export function App(props: AppProps) {
 
                 <div className="edgecase-footer px-3 pb-5 pt-2">
                   <div className="rounded-2xl border border-input/85 bg-card/95 p-2 shadow-[0_18px_36px_rgba(0,0,0,0.5)] backdrop-blur">
-                    <div className="relative mb-1 flex items-center justify-between">
+                    <div ref={actionsContainerRef} className="relative mb-1 flex items-center justify-between">
                       <div className="flex items-center gap-1">
                         <Button
                           variant="ghost"
@@ -415,7 +439,7 @@ export function App(props: AppProps) {
                             sendFromInput();
                           }
                         }}
-                        placeholder="Ask for the next step, hint, or solution..."
+                        placeholder={inputPlaceholderText}
                         className="h-[76px] max-h-[220px] min-h-[76px] flex-1 resize-none rounded-2xl border border-input/80 bg-muted/25 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
                       />
                       {props.sending ? (
@@ -562,7 +586,7 @@ function SettingsSheet({ settings, onClose, onSave }: SettingsSheetProps) {
   return (
     <>
       <div className="absolute inset-0 z-40 bg-black/45" onClick={onClose} />
-      <div className="absolute right-0 top-0 z-50 flex h-full w-[86%] max-w-[360px] flex-col border-l border-border/80 bg-background/95 backdrop-blur">
+      <div className="absolute bottom-2 right-2 top-2 z-50 flex w-[86%] max-w-[360px] flex-col overflow-hidden rounded-2xl border border-border/80 bg-background/95 shadow-2xl backdrop-blur">
         <div className="flex items-center justify-between px-3 py-3">
           <p className="text-sm font-semibold">Settings</p>
           <Button variant="ghost" size="icon" onClick={onClose}>
