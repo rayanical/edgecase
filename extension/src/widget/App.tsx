@@ -117,6 +117,7 @@ export function App(props: AppProps) {
   const [manualCode, setManualCode] = useState("");
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const actionsContainerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const lastErrorToastRef = useRef("");
 
@@ -197,11 +198,35 @@ export function App(props: AppProps) {
 
   const platformLabel = props.context ? formatPlatformLabel(props.context) : "No platform detected";
   const timerText = formatTimer(props.timerSeconds);
+  const centeredChatError = getCenteredChatError(props.statusType, props.statusText);
+  const inputPlaceholderText =
+    props.personaMode === "collaborator"
+      ? "Stuck? Let's figure this out together..."
+      : "Explain your approach, or ask for a hint...";
   const launcherLogoSrc = chrome.runtime.getURL("edgecase-logo-gray.svg");
   const sendQuickAction = (prompt: string) => {
     props.onSend(prompt);
     setShowQuickActions(false);
   };
+
+  useEffect(() => {
+    if (!showQuickActions) {
+      return;
+    }
+
+    const onPointerDown = (event: MouseEvent) => {
+      const path = event.composedPath();
+      if (actionsContainerRef.current && path.includes(actionsContainerRef.current)) {
+        return;
+      }
+      setShowQuickActions(false);
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+    };
+  }, [showQuickActions]);
 
   return (
     <div className="edgecase-root">
@@ -310,15 +335,29 @@ export function App(props: AppProps) {
                     const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
                     stickToBottomRef.current = distanceFromBottom < 56;
                   }}
-                  className="edgecase-scroll flex-1 overflow-auto px-3 py-2">
-                  {props.history.length === 0 ? (
+                  className="edgecase-scroll relative flex-1 overflow-auto px-3 py-2">
+                  {centeredChatError ? (
+                    <div className="flex h-full items-center justify-center px-2">
+                      <div className="w-full max-w-[360px] rounded-xl border border-border/80 bg-card/90 p-4 text-center shadow-lg">
+                        <p className="text-sm font-semibold text-foreground">{centeredChatError.title}</p>
+                        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{centeredChatError.description}</p>
+                        {centeredChatError.kind === "missing_key" ? (
+                          <div className="mt-3">
+                            <Button variant="ghost" size="sm" className="rounded-full border border-border/70" onClick={() => setShowSettingsSheet(true)}>
+                              Open Settings
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : props.history.length === 0 ? (
                     <div className="flex h-full flex-col items-center justify-center gap-3">
                       <div
                         className={`edgecase-status-${props.statusType} inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground`}>
                         {statusIcon}
                         <span>{props.statusText}</span>
                       </div>
-                      <p className="text-center text-xs text-muted-foreground">Start by asking for a hint or approach check.</p>
+                      <p className="text-center text-xs text-muted-foreground">Use Actions for quick prompts or ask your next question.</p>
                       <div className="flex flex-wrap justify-center gap-2">
                         {QUICK_ACTIONS.map((item) => (
                           <Button key={item.label} variant="ghost" size="sm" className="rounded-full" onClick={() => sendQuickAction(item.prompt)}>
@@ -347,7 +386,7 @@ export function App(props: AppProps) {
 
                 <div className="edgecase-footer px-3 pb-5 pt-2">
                   <div className="rounded-2xl border border-input/85 bg-card/95 p-2 shadow-[0_18px_36px_rgba(0,0,0,0.5)] backdrop-blur">
-                    <div className="relative mb-1 flex items-center justify-between">
+                    <div ref={actionsContainerRef} className="relative mb-1 flex items-center justify-between">
                       <div className="flex items-center gap-1">
                         <Button
                           variant="ghost"
@@ -400,7 +439,7 @@ export function App(props: AppProps) {
                             sendFromInput();
                           }
                         }}
-                        placeholder="Ask for the next step, hint, or solution..."
+                        placeholder={inputPlaceholderText}
                         className="h-[76px] max-h-[220px] min-h-[76px] flex-1 resize-none rounded-2xl border border-input/80 bg-muted/25 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
                       />
                       {props.sending ? (
@@ -474,6 +513,41 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(Math.max(0, Math.floor(value || 0)));
 }
 
+type CenteredChatError = {
+  title: string;
+  description: string;
+  kind: "missing_key" | "api_error";
+};
+
+function getCenteredChatError(statusType: AppProps["statusType"], statusText: string): CenteredChatError | null {
+  if (statusType !== "error" || !statusText) {
+    return null;
+  }
+  const message = statusText.replace(/^Error:\s*/i, "").trim();
+  if (!message) {
+    return null;
+  }
+  if (/missing api key/i.test(message)) {
+    return {
+      title: "Missing API Key",
+      description: "Add your provider API key in Settings to start chatting.",
+      kind: "missing_key"
+    };
+  }
+  if (isLikelyApiErrorMessage(message)) {
+    return {
+      title: "API Request Failed",
+      description: message,
+      kind: "api_error"
+    };
+  }
+  return null;
+}
+
+function isLikelyApiErrorMessage(message: string): boolean {
+  return /(api|provider|model|invalid key|unauthorized|forbidden|rate limit|quota|429|401|403|bad request)/i.test(message);
+}
+
 function MessageMarkdown({ text }: { text: string }) {
   return (
     <div className="edgecase-markdown break-words text-xs leading-relaxed">
@@ -512,7 +586,7 @@ function SettingsSheet({ settings, onClose, onSave }: SettingsSheetProps) {
   return (
     <>
       <div className="absolute inset-0 z-40 bg-black/45" onClick={onClose} />
-      <div className="absolute right-0 top-0 z-50 flex h-full w-[86%] max-w-[360px] flex-col border-l border-border/80 bg-background/95 backdrop-blur">
+      <div className="absolute bottom-2 right-2 top-2 z-50 flex w-[86%] max-w-[360px] flex-col overflow-hidden rounded-2xl border border-border/80 bg-background/95 shadow-2xl backdrop-blur">
         <div className="flex items-center justify-between px-3 py-3">
           <p className="text-sm font-semibold">Settings</p>
           <Button variant="ghost" size="icon" onClick={onClose}>

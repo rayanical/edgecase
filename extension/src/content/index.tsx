@@ -50,11 +50,15 @@ const state = {
 
 let render: (() => void) | null = null;
 let port: chrome.runtime.Port | null = null;
+let reconnectTimer: number | null = null;
+let reconnectAttempts = 0;
 let lastContextSignature = "";
 let mutationTimer: number | null = null;
 let urlSnapshot = location.href;
 let tickTimer: number | null = null;
 let lastTimerFlushAt = 0;
+const MAX_PORT_RECONNECT_ATTEMPTS = 6;
+const PORT_RECONNECT_BASE_DELAY_MS = 400;
 
 void bootstrap();
 
@@ -181,9 +185,31 @@ function rerender() {
 }
 
 function connectPort() {
-  port = chrome.runtime.connect({ name: "edgecase-chat" });
+  if (port) {
+    return;
+  }
 
-  port.onMessage.addListener((message: StreamEvent) => {
+  try {
+    const nextPort = chrome.runtime.connect({ name: "edgecase-chat" });
+    port = nextPort;
+    reconnectAttempts = 0;
+    if (reconnectTimer) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  } catch (error) {
+    console.debug("[Edgecase][port] connect failed", error);
+    schedulePortReconnect();
+    return;
+  }
+
+  const connectedPort = port;
+  console.debug("[Edgecase][port] connected");
+
+  connectedPort.onMessage.addListener((message: StreamEvent) => {
+    if (port !== connectedPort) {
+      return;
+    }
     if (!state.requestId || message.requestId !== state.requestId) {
       return;
     }
@@ -225,6 +251,47 @@ function connectPort() {
       rerender();
     }
   });
+
+  connectedPort.onDisconnect.addListener(() => {
+    if (port !== connectedPort) {
+      return;
+    }
+    console.debug("[Edgecase][port] disconnected", chrome.runtime.lastError?.message || "no runtime error");
+    port = null;
+    if (state.sending || state.requestId) {
+      state.sending = false;
+      state.requestId = null;
+      state.statusText = "Error: Chat connection dropped. Reconnecting...";
+      state.statusType = "error";
+      const nextHistory = [...state.history];
+      const last = nextHistory[nextHistory.length - 1];
+      if (last && last.role === "assistant" && last.content === "") {
+        nextHistory.pop();
+      }
+      state.history = nextHistory;
+      rerender();
+    }
+    schedulePortReconnect();
+  });
+}
+
+function schedulePortReconnect() {
+  if (reconnectTimer || port || reconnectAttempts >= MAX_PORT_RECONNECT_ATTEMPTS) {
+    if (reconnectAttempts >= MAX_PORT_RECONNECT_ATTEMPTS) {
+      state.statusText = "Error: Chat connection unavailable. Reload the page.";
+      state.statusType = "error";
+      rerender();
+    }
+    return;
+  }
+
+  reconnectAttempts += 1;
+  const delay = Math.min(4000, PORT_RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1));
+  console.debug("[Edgecase][port] scheduling reconnect", { attempt: reconnectAttempts, delay });
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    connectPort();
+  }, delay);
 }
 
 function appendStreamChunk(chunk: string) {
@@ -238,7 +305,14 @@ function appendStreamChunk(chunk: string) {
 }
 
 async function sendMessage(text: string) {
-  if (!text.trim() || state.sending || !port || !state.tabId) {
+  if (!text.trim() || state.sending || !state.tabId) {
+    return;
+  }
+  if (!port) {
+    state.statusText = "Error: Chat connection unavailable. Reconnecting...";
+    state.statusType = "error";
+    rerender();
+    connectPort();
     return;
   }
 
@@ -263,7 +337,24 @@ async function sendMessage(text: string) {
     personaMode: state.personaMode
   };
 
-  port.postMessage(payload);
+  try {
+    port.postMessage(payload);
+  } catch (error) {
+    console.debug("[Edgecase][port] send failed", error);
+    state.sending = false;
+    state.requestId = null;
+    state.statusText = "Error: Failed to send message. Reconnecting...";
+    state.statusType = "error";
+    const nextHistory = [...state.history];
+    const last = nextHistory[nextHistory.length - 1];
+    if (last && last.role === "assistant" && last.content === "") {
+      nextHistory.pop();
+    }
+    state.history = nextHistory;
+    rerender();
+    port = null;
+    schedulePortReconnect();
+  }
 }
 
 function cancelMessage() {
@@ -276,7 +367,18 @@ function cancelMessage() {
     tabId: state.tabId,
     requestId: state.requestId
   };
-  port.postMessage(payload);
+  try {
+    port.postMessage(payload);
+  } catch (error) {
+    console.debug("[Edgecase][port] cancel failed", error);
+    state.sending = false;
+    state.requestId = null;
+    state.statusText = "Error: Failed to cancel request.";
+    state.statusType = "error";
+    rerender();
+    port = null;
+    schedulePortReconnect();
+  }
 }
 
 async function clearChat() {
