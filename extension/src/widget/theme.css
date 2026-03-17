@@ -90,12 +90,12 @@
 
 .edgecase-markdown ul,
 .edgecase-markdown ol {
-  margin: 0.35rem 0 0.35rem 1rem;
+  margin: 0.45rem 0 0.55rem 1rem;
   padding: 0;
 }
 
 .edgecase-markdown li {
-  margin: 0.15rem 0;
+  margin: 0.22rem 0;
 }
 
 .edgecase-markdown pre {
@@ -103,6 +103,42 @@
 }
 
 .edgecase-markdown pre:last-child {
+  margin-bottom: 1rem;
+}
+
+.edgecase-markdown h3 {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: hsl(var(--foreground));
+}
+
+.edgecase-markdown strong {
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+
+.edgecase-markdown .inline-code {
+  display: inline-block;
+  margin: 0 0.08rem;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.9em;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.edgecase-markdown .code-block {
+  margin: 0.45rem 0 0.8rem;
+  overflow-x: auto;
+  border-radius: 0.5rem;
+}
+
+.edgecase-markdown .code-block:last-child {
   margin-bottom: 1rem;
 }
 

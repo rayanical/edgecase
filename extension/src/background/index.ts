@@ -238,6 +238,8 @@ function buildSystemPrompt(
       : settings.responseStyle === "detailed"
         ? "Use detailed step-by-step reasoning with pitfalls and tradeoffs."
         : "Balance concise guidance with enough detail to unblock quickly.";
+  const formattingInstruction =
+    "Formatting: use ### headings for major sections (especially edge cases), bullet points for grouped details, inline backticks for identifiers/expressions, and fenced code blocks only for multiline snippets.";
 
   const contextText = context
     ? [
@@ -272,7 +274,7 @@ function buildSystemPrompt(
       ].join("\n")
     : "No code snapshot available yet. Ask one concise clarifying question only if required to proceed.";
 
-  return [coachingInstruction, responseInstruction, settings.systemPromptOverride.trim(), contextText, codeText]
+  return [coachingInstruction, responseInstruction, formattingInstruction, settings.systemPromptOverride.trim(), contextText, codeText]
     .filter(Boolean)
     .join("\n\n");
 }
