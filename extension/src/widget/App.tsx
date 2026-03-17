@@ -75,35 +75,38 @@ const markdownComponents: Components = {
   },
   code({ inline, className, children, ...props }: any) {
     const raw = String(children).replace(/\n$/, "");
+    const isSingleLine = !raw.includes("\n");
     const match = /language-([\w-]+)/.exec(className || "");
     const language = match ? match[1] : "text";
 
-    if (inline) {
+    if (inline || isSingleLine) {
       return (
-        <code className="rounded border border-border bg-card px-1 py-[1px] text-[11px]" {...props}>
-          {children}
+        <code className="inline-code rounded border border-border bg-card px-1 py-[1px] text-[11px]" {...props}>
+          {raw}
         </code>
       );
     }
 
     return (
-      <SyntaxHighlighter
-        {...props}
-        language={language}
-        style={vscDarkPlus || oneDark}
-        customStyle={{
-          margin: 0,
-          borderRadius: "0.5rem",
-          border: "1px solid hsl(var(--border))",
-          background: "hsl(var(--card))",
-          padding: "0.65rem 0.75rem",
-          fontSize: "11px",
-          lineHeight: "1.5",
-          overflowX: "auto"
-        }}
-        wrapLongLines={false}>
-        {raw}
-      </SyntaxHighlighter>
+      <div className="code-block">
+        <SyntaxHighlighter
+          {...props}
+          language={language}
+          style={vscDarkPlus || oneDark}
+          customStyle={{
+            margin: 0,
+            borderRadius: "0.5rem",
+            border: "1px solid hsl(var(--border))",
+            background: "hsl(var(--card))",
+            padding: "0.65rem 0.75rem",
+            fontSize: "11px",
+            lineHeight: "1.5",
+            overflowX: "auto"
+          }}
+          wrapLongLines={false}>
+          {raw}
+        </SyntaxHighlighter>
+      </div>
     );
   }
 };
