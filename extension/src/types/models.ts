@@ -1,7 +1,5 @@
 export type Provider = "openai" | "anthropic" | "gemini";
-export type CoachingStyle = "interviewer" | "collaborative" | "socratic";
 export type ResponseStyle = "concise" | "balanced" | "detailed";
-export type PersonaMode = "interviewer" | "collaborator";
 
 export type ProblemContext = {
   site: "leetcode" | "neetcode" | "hackerrank" | "generic";
@@ -30,7 +28,6 @@ export type ChatHistoryItem = {
 
 export type UiPreferences = {
   panelRectByHost: Record<string, { x: number; y: number; width: number; height: number }>;
-  personaByHost: Record<string, PersonaMode>;
 };
 
 export type Settings = {
@@ -39,8 +36,8 @@ export type Settings = {
   apiKey: string;
   temperature: number;
   maxTokens: number;
-  coachingStyle: CoachingStyle;
   responseStyle: ResponseStyle;
+  directAnswersEnabled: boolean;
   systemPromptOverride: string;
   tokenCounter: {
     totalTokens: number;

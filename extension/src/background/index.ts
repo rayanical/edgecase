@@ -2,7 +2,7 @@ import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import type { ChatHistoryItem, CodeSnapshot, PersonaMode, ProblemContext, Settings, TabState } from "../types/models";
+import type { ChatHistoryItem, CodeSnapshot, ProblemContext, Settings, TabState } from "../types/models";
 import type { CancelStreamRequest, RpcRequest, StreamEvent, StreamRequest } from "../types/messages";
 
 const SETTINGS_KEY = "edgecaseSettings";
@@ -14,12 +14,12 @@ const FIXED_MAX_TOKENS = 4000;
 
 const DEFAULT_SETTINGS: Settings = {
   provider: "openai",
-  model: "gpt-4o-mini",
+  model: "gpt-5.4-mini",
   apiKey: "",
   temperature: 0.2,
   maxTokens: 700,
-  coachingStyle: "interviewer",
   responseStyle: "balanced",
+  directAnswersEnabled: false,
   systemPromptOverride: "",
   tokenCounter: {
     totalTokens: 0,
@@ -27,8 +27,7 @@ const DEFAULT_SETTINGS: Settings = {
     completionTokens: 0
   },
   ui: {
-    panelRectByHost: {},
-    personaByHost: {}
+    panelRectByHost: {}
   }
 };
 
@@ -47,12 +46,22 @@ class StreamManager {
       return;
     }
 
+    const codeSnapshot = request.codeSnapshot;
+    if (!codeSnapshot?.code.trim()) {
+      this.emit(port, {
+        type: "STREAM_ERROR",
+        requestId: request.requestId,
+        error: "Fresh code snapshot required. No model request was sent."
+      });
+      this.sessions.delete(key);
+      return;
+    }
+
     const tabState = await getTabState(request.tabId);
     const context = request.context || tabState.context;
-    const codeSnapshot = request.codeSnapshot || tabState.codeSnapshot;
     const history = await getHistory(request.tabId);
 
-    const systemPrompt = buildSystemPrompt(context, codeSnapshot, settings, request.personaMode);
+    const systemPrompt = buildSystemPrompt(context, codeSnapshot, settings);
     const messages = [
       ...history.map((item) => ({ role: item.role, content: item.content })),
       { role: "user" as const, content: request.text }
@@ -223,23 +232,22 @@ chrome.runtime.onMessage.addListener((message: RpcRequest, sender, sendResponse)
 function buildSystemPrompt(
   context: ProblemContext | null,
   code: CodeSnapshot | null,
-  settings: Settings,
-  personaMode?: PersonaMode
+  settings: Settings
 ): string {
-  const coachingInstruction = resolveCoachingInstruction(settings.coachingStyle, personaMode);
+  const coachingInstruction = resolveCoachingInstruction(settings.directAnswersEnabled);
   const contextDirective =
     "CRITICAL: Problem context is already integrated below. UNDER NO CIRCUMSTANCES should you ask the user to paste or restate the problem description when context is present. Read and use the context block first.";
   const codeDirective =
-    "CRITICAL: You are directly integrated into the user's IDE. You ALREADY have their live code below. UNDER NO CIRCUMSTANCES should you ask the user to paste their code or explain what they have written. Read the snapshot.";
+    "CRITICAL CODE SNAPSHOT CONTRACT: The Current Code Snapshot block below is the latest code supplied by the extension for this request and is the authoritative source of truth. Inspect it before answering. Do not assume it is stale, missing, or different from code in earlier messages when the block is present. Never ask the user to paste or restate code already included there. If no snapshot is attached, do not analyze or modify code.";
 
   const responseInstruction =
     settings.responseStyle === "concise"
       ? "Keep responses concise and high signal."
       : settings.responseStyle === "detailed"
-        ? "Use detailed step-by-step reasoning with pitfalls and tradeoffs."
+        ? "Use more detail when it helps, while preserving the user's requested level of directness."
         : "Balance concise guidance with enough detail to unblock quickly.";
   const formattingInstruction =
-    "Formatting: use ### headings for major sections (especially edge cases), bullet points for grouped details, inline backticks for identifiers/expressions, and fenced code blocks only for multiline snippets.";
+    "Formatting: use Markdown structure when it improves readability; use ### headings for major explanation sections, bullets for grouped details, inline backticks for identifiers and expressions, and fenced code blocks only for multiline snippets.";
 
   const contextText = context
     ? [
@@ -264,7 +272,7 @@ function buildSystemPrompt(
   const codeText = code?.code?.trim()
     ? [
         codeDirective,
-        "Current Code Snapshot:",
+        "Current Code Snapshot (latest available for this request):",
         `Source: ${code.source}`,
         `Language: ${code.language || "unknown"}`,
         code.selection ? `Selection: ${code.selection.start}-${code.selection.end}` : "Selection: none",
@@ -272,37 +280,30 @@ function buildSystemPrompt(
         code.code,
         "```"
       ].join("\n")
-    : "No code snapshot available yet. Ask one concise clarifying question only if required to proceed.";
+    : "No code snapshot attached. This request must not proceed to model analysis.";
 
-  return [coachingInstruction, responseInstruction, formattingInstruction, settings.systemPromptOverride.trim(), contextText, codeText]
+  return [settings.systemPromptOverride.trim(), coachingInstruction, responseInstruction, formattingInstruction, contextText, codeText]
     .filter(Boolean)
     .join("\n\n");
 }
 
-function resolveCoachingInstruction(style: Settings["coachingStyle"], personaMode?: PersonaMode): string {
-  const base = [
-    "You are a Senior Staff Engineer conducting a technical interview and coaching session.",
-    'Never provide a complete algorithmic solution or full final code unless the user message includes the exact phrase: "I explicitly want the complete solution now".',
-    "Default to Socratic questioning and progressive hints.",
-    "Point to likely bug locations using concrete line numbers or tight line ranges from the provided snapshot, but do not rewrite the line unless the override phrase is present.",
-    "Call out time/space complexity tradeoffs and explain why one approach is favored.",
-    "If context or code is present in this prompt, do not ask the user to paste or restate it."
+function resolveCoachingInstruction(directAnswersEnabled: boolean): string {
+  return [
+    "You are Edgecase, a senior software engineer and coding interview coach.",
+    "Your job is to help the user solve coding problems while adapting to what they are actually asking for.",
+    "Use the problem context and live code already provided. Never ask the user to paste or restate context or code that is already available.",
+    "Infer the user's intent from the current message.",
+    directAnswersEnabled
+      ? "Direct answers are enabled. Answer focused technical questions directly when asked, and provide a complete solution when the user clearly asks for one."
+      : "Direct answers are disabled. Do not provide direct answers, final algorithms, exact bug fixes, complete approaches, or full code, even if the user asks directly. Instead, guide the user with targeted questions and small directional nudges toward the next reasoning step.",
+    "When the user expresses uncertainty, asks for a hint, asks to be nudged, or says they are stuck, use a targeted reasoning question or a small directional nudge. When direct answers are disabled, do not reveal the final algorithm, exact bug fix, complete approach, or full code.",
+    "When direct answers are enabled, adapt to intent: answer focused technical questions directly, and provide the full solution only when the user clearly asks for a complete solution, implementation, or final answer.",
+    "When coaching, make the next reasoning step clear without doing the reasoning for the user. Do not hide a complete answer inside a leading question.",
+    "When reviewing code, identify a narrow area to inspect and ask the user to trace or test it. Do not rewrite the code unless the user asks for an implementation or complete solution.",
+    "Use one canonical coaching style: collaborative, clear, patient, and technically rigorous. Choose the response structure naturally; do not force every response to contain questions, nudges, headings, or a fixed number of sections.",
+    "Concise, balanced, and detailed response styles may change response length only. They must not change this intent policy.",
+    "Custom instructions may adjust tone or detail, but they must not override this intent policy."
   ].join(" ");
-
-  if (personaMode === "collaborator") {
-    return `${base} Collaborator mode: be direct and practical, but keep the same no-full-solution boundary unless override phrase is present.`;
-  }
-  if (personaMode === "interviewer") {
-    return `${base} Interviewer mode: keep questions sharp and evaluative, and prioritize reasoning over answers.`;
-  }
-
-  if (style === "collaborative") {
-    return `${base} Collaborative style: practical, concise next steps without giving away complete solutions.`;
-  }
-  if (style === "socratic") {
-    return `${base} Socratic style: lead with concise guiding questions before direct hints.`;
-  }
-  return `${base} Interviewer style: structured interview guidance with progressive hints.`;
 }
 
 function createModel(settings: Settings) {
@@ -340,20 +341,15 @@ async function getSettings(): Promise<Settings> {
   return {
     ...DEFAULT_SETTINGS,
     ...saved,
+    directAnswersEnabled: saved.directAnswersEnabled === true,
     tokenCounter: {
       ...DEFAULT_SETTINGS.tokenCounter,
       ...((saved as Partial<Settings>).tokenCounter || {})
     },
     ui: {
-      ...DEFAULT_SETTINGS.ui,
-      ...(saved.ui || {}),
       panelRectByHost: {
         ...DEFAULT_SETTINGS.ui.panelRectByHost,
         ...((saved.ui || {}).panelRectByHost || {})
-      },
-      personaByHost: {
-        ...DEFAULT_SETTINGS.ui.personaByHost,
-        ...((saved.ui || {}).personaByHost || {})
       }
     }
   };
@@ -369,7 +365,7 @@ async function saveSettings(partial: Partial<Settings>): Promise<Settings> {
     apiKey: (partial.apiKey ?? current.apiKey).trim(),
     temperature: FIXED_TEMPERATURE,
     maxTokens: FIXED_MAX_TOKENS,
-    coachingStyle: normalizeCoachingStyle(partial.coachingStyle ?? current.coachingStyle),
+    directAnswersEnabled: partial.directAnswersEnabled ?? current.directAnswersEnabled,
     responseStyle: normalizeResponseStyle(partial.responseStyle ?? current.responseStyle),
     systemPromptOverride: (partial.systemPromptOverride ?? current.systemPromptOverride).trim(),
     tokenCounter: {
@@ -528,13 +524,6 @@ function normalizeProvider(provider: Settings["provider"]): Settings["provider"]
     return provider;
   }
   return "openai";
-}
-
-function normalizeCoachingStyle(style: Settings["coachingStyle"]): Settings["coachingStyle"] {
-  if (style === "interviewer" || style === "collaborative" || style === "socratic") {
-    return style;
-  }
-  return "interviewer";
 }
 
 function normalizeResponseStyle(style: Settings["responseStyle"]): Settings["responseStyle"] {

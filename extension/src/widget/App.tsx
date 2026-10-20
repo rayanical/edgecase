@@ -14,7 +14,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type { Components } from "react-markdown";
 import { Toaster, toast } from "sonner";
-import type { ChatHistoryItem, CodeSnapshot, PersonaMode, ProblemContext, Settings } from "../types/models";
+import type { ChatHistoryItem, CodeSnapshot, ProblemContext, Settings } from "../types/models";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Input } from "./components/ui/input";
@@ -33,14 +33,13 @@ type AppProps = {
   sending: boolean;
   codeSnapshot: CodeSnapshot | null;
   settings: Settings;
-  personaMode: PersonaMode;
   timerSeconds: number;
   timerRunning: boolean;
   onToggleOpen: () => void;
   onClose: () => void;
   onStartDrag: (event: React.MouseEvent<HTMLDivElement>) => void;
   onStartResize: (event: React.MouseEvent<HTMLDivElement>) => void;
-  onTogglePersona: (mode: PersonaMode) => void;
+  onToggleDirectAnswers: (enabled: boolean) => void;
   onTimerToggle: () => void;
   onTimerReset: () => void;
   onRescan: () => void;
@@ -52,7 +51,7 @@ type AppProps = {
 };
 
 const MODELS_BY_PROVIDER = {
-  openai: ["gpt-4o", "gpt-4o-mini", "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini"],
+  openai: ["gpt-5.4-mini", "gpt-4o", "gpt-4o-mini", "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini"],
   anthropic: ["claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"],
   gemini: ["gemini-2.5-flash", "gemini-3-flash-preview"]
 } as const;
@@ -65,9 +64,11 @@ const QUICK_ACTIONS = [
   { label: "Complexity", prompt: "How should I reason about time and space complexity?" },
   {
     label: "Full solution",
-    prompt: "I explicitly want the complete solution now, including algorithm explanation and code."
+    prompt: "Give me the complete solution, including algorithm explanation and code."
   }
 ];
+const CHAT_BOTTOM_THRESHOLD_PX = 32;
+const CHAT_REATTACH_THRESHOLD_PX = 4;
 
 const markdownComponents: Components = {
   pre({ children }) {
@@ -118,10 +119,12 @@ export function App(props: AppProps) {
   const [showManualCodeDialog, setShowManualCodeDialog] = useState(false);
   const [timerHover, setTimerHover] = useState(false);
   const [manualCode, setManualCode] = useState("");
+  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const actionsContainerRef = useRef<HTMLDivElement | null>(null);
-  const stickToBottomRef = useRef(true);
+  const followLatestRef = useRef(true);
+  const userDetachedRef = useRef(false);
   const lastErrorToastRef = useRef("");
 
   const statusIcon = useMemo(() => {
@@ -164,10 +167,10 @@ export function App(props: AppProps) {
       return;
     }
 
-    if (props.sending || stickToBottomRef.current) {
+    if (followLatestRef.current) {
       node.scrollTop = node.scrollHeight;
     }
-  }, [props.history, props.sending]);
+  }, [props.history]);
 
   useEffect(() => {
     if (!props.isOpen) {
@@ -177,8 +180,22 @@ export function App(props: AppProps) {
     if (!node) {
       return;
     }
+    userDetachedRef.current = false;
+    followLatestRef.current = true;
+    setIsFollowingLatest(true);
     node.scrollTop = node.scrollHeight;
   }, [props.isOpen]);
+
+  const jumpToLatest = () => {
+    const node = chatScrollRef.current;
+    if (!node) {
+      return;
+    }
+    userDetachedRef.current = false;
+    followLatestRef.current = true;
+    setIsFollowingLatest(true);
+    node.scrollTop = node.scrollHeight;
+  };
 
   useEffect(() => {
     if (props.statusType !== "error" || !props.statusText || props.statusText === lastErrorToastRef.current) {
@@ -202,10 +219,7 @@ export function App(props: AppProps) {
   const platformLabel = props.context ? formatPlatformLabel(props.context) : "No platform detected";
   const timerText = formatTimer(props.timerSeconds);
   const centeredChatError = getCenteredChatError(props.statusType, props.statusText);
-  const inputPlaceholderText =
-    props.personaMode === "collaborator"
-      ? "Stuck? Let's figure this out together..."
-      : "Explain your approach, or ask for a hint...";
+  const inputPlaceholderText = "Ask a question, share your approach, or ask for a hint...";
   const launcherLogoSrc = chrome.runtime.getURL("edgecase-logo-gray.svg");
   const sendQuickAction = (prompt: string) => {
     props.onSend(prompt);
@@ -289,26 +303,18 @@ export function App(props: AppProps) {
                     </button>
                   ) : null}
                 </div>
-                <div className="flex rounded-full border border-border bg-muted/70 p-0.5 shadow-inner">
-                  <button
-                    type="button"
-                    className={`rounded-full px-2 py-1 text-[10px] ${props.personaMode === "interviewer" ? "bg-foreground text-background" : "text-muted-foreground"}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      props.onTogglePersona("interviewer");
-                    }}>
-                    Interviewer
-                  </button>
-                  <button
-                    type="button"
-                    className={`rounded-full px-2 py-1 text-[10px] ${props.personaMode === "collaborator" ? "bg-foreground text-background" : "text-muted-foreground"}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      props.onTogglePersona("collaborator");
-                    }}>
-                    Collaborator
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  aria-pressed={props.settings.directAnswersEnabled}
+                  className={props.settings.directAnswersEnabled ? "rounded-full border border-foreground\/40 bg-foreground px-2 py-1 text-[10px] text-background" : "rounded-full border border-border bg-muted\/70 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onToggleDirectAnswers(!props.settings.directAnswersEnabled);
+                  }}
+                  title={props.settings.directAnswersEnabled ? "Direct answers on" : "Direct answers off"}>
+                  Direct answers: {props.settings.directAnswersEnabled ? "On" : "Off"}
+                </button>
                 <Button variant="ghost" size="icon" onClick={() => setShowSettingsSheet(true)} title="Settings">
                   <GearIcon className="h-3.5 w-3.5" />
                 </Button>
@@ -333,10 +339,27 @@ export function App(props: AppProps) {
 
                 <div
                   ref={chatScrollRef}
+                  onWheel={(event) => {
+                    if (event.deltaY >= 0 || userDetachedRef.current) {
+                      return;
+                    }
+                    userDetachedRef.current = true;
+                    followLatestRef.current = false;
+                    setIsFollowingLatest(false);
+                  }}
                   onScroll={(event) => {
                     const node = event.currentTarget;
                     const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
-                    stickToBottomRef.current = distanceFromBottom < 56;
+                    if (distanceFromBottom > CHAT_BOTTOM_THRESHOLD_PX) {
+                      userDetachedRef.current = true;
+                    } else if (userDetachedRef.current && distanceFromBottom <= CHAT_REATTACH_THRESHOLD_PX) {
+                      userDetachedRef.current = false;
+                    }
+                    const nextIsFollowingLatest = !userDetachedRef.current;
+                    followLatestRef.current = nextIsFollowingLatest;
+                    setIsFollowingLatest((current) =>
+                      current === nextIsFollowingLatest ? current : nextIsFollowingLatest
+                    );
                   }}
                   className="edgecase-scroll relative flex-1 overflow-auto px-3 py-2">
                   {centeredChatError ? (
@@ -385,6 +408,15 @@ export function App(props: AppProps) {
                       ))}
                     </div>
                   )}
+                  {props.sending && !isFollowingLatest ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border/80 bg-card/95 px-3 text-[11px] shadow-lg backdrop-blur"
+                      onClick={jumpToLatest}>
+                      Jump to latest
+                    </Button>
+                  ) : null}
                 </div>
 
                 <div className="edgecase-footer px-3 pb-5 pt-2">
