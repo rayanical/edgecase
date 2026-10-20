@@ -255,8 +255,9 @@ export function App(props: AppProps) {
         <img
           src={launcherLogoSrc}
           alt="Edgecase"
-          className="h-[90px] w-[90px] object-contain opacity-100"
-          style={{ transform: "scale(1.8)", transformOrigin: "center" }}
+          className="h-8 w-8 shrink-0 object-contain"
+          width={32}
+          height={32}
         />
       </Button>
 
@@ -275,7 +276,10 @@ export function App(props: AppProps) {
           }>
           <Card className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-border/80 bg-background/95 shadow-2xl backdrop-blur">
             <div className="flex cursor-move items-center justify-between px-3 py-3" onMouseDown={props.onStartDrag}>
-              <p className="text-sm font-semibold tracking-tight text-foreground/95">Edgecase</p>
+              <div className="flex items-center gap-2">
+                <img src={launcherLogoSrc} alt="" width={20} height={20} className="h-5 w-5 shrink-0" />
+                <p className="text-sm font-semibold tracking-tight text-foreground/95">Edgecase</p>
+              </div>
               <div className="flex items-center gap-2">
                 <div
                   className="relative flex items-center gap-1 rounded-full border border-border bg-muted/70 px-2 py-1"

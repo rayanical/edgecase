@@ -1,5 +1,8 @@
 <div align="center">
-  <img src="extension/edgecase-logo.png" alt="Edgecase logo" width="96" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="extension/edgecase-logo-lightgray.svg" />
+    <img src="extension/edgecase-logo.svg" alt="Edgecase logo" width="96" height="96" />
+  </picture>
   <h1>Edgecase</h1>
   <p>An AI coding interview coach, right beside your editor.</p>
   <p><a href="#get-started">Get started</a> · <a href="#coaching-controls">Coaching controls</a> · <a href="#code-context">Code context</a> · <a href="#development">Development</a></p>
