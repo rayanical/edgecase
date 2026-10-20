@@ -4,6 +4,7 @@ type BridgeMessage =
   | {
       source: "edgecase-page-bridge";
       type: "CODE_SNAPSHOT";
+      requestId?: string;
       payload: {
         source: CodeSnapshot["source"];
         language: string | null;
@@ -14,13 +15,22 @@ type BridgeMessage =
   | {
       source: "edgecase-page-bridge";
       type: "CODE_SNAPSHOT_UNAVAILABLE";
+      requestId?: string;
     };
 
-export function installBridgeListener(onSnapshot: (snapshot: CodeSnapshot) => void): () => void {
+export function installBridgeListener(
+  onSnapshot: (snapshot: CodeSnapshot, requestId?: string) => void,
+  onUnavailable?: (requestId?: string) => void
+): () => void {
   const handler = (event: MessageEvent<unknown>) => {
     try {
       const data = event.data;
       if (!isObjectRecord(data) || data.source !== "edgecase-page-bridge") {
+        return;
+      }
+      const requestId = typeof data.requestId === "string" ? data.requestId : undefined;
+      if (data.type === "CODE_SNAPSHOT_UNAVAILABLE") {
+        onUnavailable?.(requestId);
         return;
       }
       if (data.type !== "CODE_SNAPSHOT") {
@@ -30,13 +40,16 @@ export function installBridgeListener(onSnapshot: (snapshot: CodeSnapshot) => vo
         return;
       }
 
-      onSnapshot({
-        source: data.payload.source,
-        language: data.payload.language,
-        code: data.payload.code,
-        selection: data.payload.selection,
-        updatedAt: new Date().toISOString()
-      });
+      onSnapshot(
+        {
+          source: data.payload.source,
+          language: data.payload.language,
+          code: data.payload.code,
+          selection: data.payload.selection,
+          updatedAt: new Date().toISOString()
+        },
+        requestId
+      );
     } catch (error) {
       console.debug("[Edgecase][bridge] adapter bridge listener failed", error);
     }

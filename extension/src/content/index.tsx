@@ -9,7 +9,7 @@ import type {
   StreamEvent,
   StreamRequest
 } from "../types/messages";
-import type { ChatHistoryItem, CodeSnapshot, PersonaMode, ProblemContext, Settings, TabState } from "../types/models";
+import type { ChatHistoryItem, CodeSnapshot, ProblemContext, Settings, TabState } from "../types/models";
 import { detectDomEditorSnapshot, detectTextareaSnapshot, installBridgeListener } from "../code-context/adapters";
 import { extractProblemContext } from "../detection/parsers";
 import { contextSignature } from "../detection/shared";
@@ -37,7 +37,6 @@ const state = {
   codeSnapshot: null as CodeSnapshot | null,
   history: [] as ChatHistoryItem[],
   settings: null as Settings | null,
-  personaMode: "interviewer" as PersonaMode,
   timer: {
     key: null as string | null,
     elapsedMs: 0,
@@ -59,6 +58,15 @@ let tickTimer: number | null = null;
 let lastTimerFlushAt = 0;
 const MAX_PORT_RECONNECT_ATTEMPTS = 6;
 const PORT_RECONNECT_BASE_DELAY_MS = 400;
+const CODE_SNAPSHOT_REFRESH_TIMEOUT_MS = 3000;
+
+type PendingCodeSnapshotRequest = {
+  resolve: (snapshot: CodeSnapshot | null) => void;
+  timeoutId: number;
+};
+
+let sendInProgress = false;
+const pendingCodeSnapshotRequests = new Map<string, PendingCodeSnapshotRequest>();
 
 void bootstrap();
 
@@ -115,7 +123,6 @@ function mountApp() {
         sending={state.sending}
         codeSnapshot={state.codeSnapshot}
         settings={state.settings}
-        personaMode={state.personaMode}
         timerSeconds={Math.floor(getTimerElapsedMs() / 1000)}
         timerRunning={state.timer.isRunning}
         onToggleOpen={() => {
@@ -128,17 +135,8 @@ function mountApp() {
         }}
         onStartDrag={startDrag}
         onStartResize={startResize}
-        onTogglePersona={(mode) => {
-          state.personaMode = mode;
-          if (state.settings) {
-            state.settings = {
-              ...state.settings,
-              coachingStyle: mode === "collaborator" ? "collaborative" : "interviewer"
-            };
-          }
-          void saveSettings({ coachingStyle: mode === "collaborator" ? "collaborative" : "interviewer" });
-          persistUiPrefs();
-          rerender();
+        onToggleDirectAnswers={(enabled) => {
+          void saveSettings({ directAnswersEnabled: enabled });
         }}
         onTimerToggle={() => {
           toggleTimer();
@@ -305,7 +303,7 @@ function appendStreamChunk(chunk: string) {
 }
 
 async function sendMessage(text: string) {
-  if (!text.trim() || state.sending || !state.tabId) {
+  if (!text.trim() || state.sending || sendInProgress || !state.tabId) {
     return;
   }
   if (!port) {
@@ -316,28 +314,40 @@ async function sendMessage(text: string) {
     return;
   }
 
-  state.sending = true;
-  state.requestId = createRequestId();
-  state.history = [
-    ...state.history,
-    { role: "user", content: text, ts: Date.now() },
-    { role: "assistant", content: "", ts: Date.now() }
-  ];
-  state.statusText = "Sending...";
+  sendInProgress = true;
+  state.statusText = "Refreshing code...";
   state.statusType = "warn";
   rerender();
 
-  const payload: StreamRequest = {
-    type: "SEND_CHAT_STREAM",
-    tabId: state.tabId,
-    requestId: state.requestId,
-    text,
-    context: state.context,
-    codeSnapshot: state.codeSnapshot,
-    personaMode: state.personaMode
-  };
-
   try {
+    const freshSnapshot = await requestFreshCodeSnapshot();
+    if (!freshSnapshot) {
+      state.statusText = "Error: Could not refresh code snapshot. Try again.";
+      state.statusType = "error";
+      rerender();
+      return;
+    }
+
+    state.sending = true;
+    state.requestId = createRequestId();
+    state.history = [
+      ...state.history,
+      { role: "user", content: text, ts: Date.now() },
+      { role: "assistant", content: "", ts: Date.now() }
+    ];
+    state.statusText = "Sending...";
+    state.statusType = "warn";
+    rerender();
+
+    const payload: StreamRequest = {
+      type: "SEND_CHAT_STREAM",
+      tabId: state.tabId,
+      requestId: state.requestId,
+      text,
+      context: state.context,
+      codeSnapshot: freshSnapshot,
+    };
+
     port.postMessage(payload);
   } catch (error) {
     console.debug("[Edgecase][port] send failed", error);
@@ -354,6 +364,8 @@ async function sendMessage(text: string) {
     rerender();
     port = null;
     schedulePortReconnect();
+  } finally {
+    sendInProgress = false;
   }
 }
 
@@ -421,14 +433,46 @@ function installPageBridge() {
   (document.head || document.documentElement).appendChild(script);
   script.remove();
 
-  installBridgeListener((snapshot) => {
+  installBridgeListener((snapshot, requestId) => {
+    if (requestId) {
+      resolveCodeSnapshotRequest(requestId, snapshot);
+    }
     void publishCodeSnapshot(snapshot);
+  }, (requestId) => {
+    if (requestId) {
+      resolveCodeSnapshotRequest(requestId, null);
+    }
   });
 
   setInterval(() => {
     window.postMessage({ source: "edgecase-widget", type: "REQUEST_CODE_SNAPSHOT" }, "*");
     void publishCodeSnapshot(detectDomEditorSnapshot() || detectTextareaSnapshot());
   }, 1600);
+}
+
+function requestFreshCodeSnapshot(): Promise<CodeSnapshot | null> {
+  const requestId = createRequestId();
+
+  return new Promise((resolve) => {
+    const timeoutId = window.setTimeout(() => {
+      pendingCodeSnapshotRequests.delete(requestId);
+      resolve(null);
+    }, CODE_SNAPSHOT_REFRESH_TIMEOUT_MS);
+
+    pendingCodeSnapshotRequests.set(requestId, { resolve, timeoutId });
+    window.postMessage({ source: "edgecase-widget", type: "REQUEST_CODE_SNAPSHOT", requestId }, "*");
+  });
+}
+
+function resolveCodeSnapshotRequest(requestId: string, snapshot: CodeSnapshot | null) {
+  const pending = pendingCodeSnapshotRequests.get(requestId);
+  if (!pending) {
+    return;
+  }
+
+  pendingCodeSnapshotRequests.delete(requestId);
+  window.clearTimeout(pending.timeoutId);
+  pending.resolve(snapshot);
 }
 
 async function publishCodeSnapshot(snapshot: CodeSnapshot | null) {
@@ -524,7 +568,6 @@ function applyPersistedUiPrefs(settings: Settings) {
   if (rect) {
     state.panelRect = clampRect(rect);
   }
-  state.personaMode = settings.ui.personaByHost?.[hostKey] || "interviewer";
 }
 
 function persistUiPrefs() {
@@ -538,10 +581,6 @@ function persistUiPrefs() {
       ...state.settings.ui.panelRectByHost,
       [hostKey]: state.panelRect
     },
-    personaByHost: {
-      ...(state.settings.ui.personaByHost || {}),
-      [hostKey]: state.personaMode
-    }
   };
 
   void rpc({ type: "SAVE_SETTINGS", settings: { ui } })

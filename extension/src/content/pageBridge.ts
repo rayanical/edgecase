@@ -6,11 +6,11 @@
     language: string | null;
     code: string;
     selection: { start: number; end: number } | null;
-  }) {
-    window.postMessage({ source: SOURCE, type: "CODE_SNAPSHOT", payload }, "*");
+  }, requestId?: string) {
+    window.postMessage({ source: SOURCE, type: "CODE_SNAPSHOT", requestId, payload }, "*");
   }
 
-  function tryMonaco(): boolean {
+  function tryMonaco(requestId?: string): boolean {
     const monacoGlobal = (window as unknown as { monaco?: any }).monaco;
     const editorApi = monacoGlobal?.editor;
 
@@ -25,7 +25,7 @@
         const selection = editor.getSelection?.();
         const start = model.getOffsetAt?.(selection?.getStartPosition?.()) ?? 0;
         const end = model.getOffsetAt?.(selection?.getEndPosition?.()) ?? code.length;
-        postSnapshot({ source: "monaco", language: lang, code, selection: { start, end } });
+        postSnapshot({ source: "monaco", language: lang, code, selection: { start, end } }, requestId);
         return true;
       }
     }
@@ -37,7 +37,7 @@
       const code = model?.getValue?.() || "";
       if (code.trim()) {
         const lang = model?.getLanguageId?.() || null;
-        postSnapshot({ source: "monaco", language: lang, code, selection: null });
+        postSnapshot({ source: "monaco", language: lang, code, selection: null }, requestId);
         return true;
       }
     }
@@ -50,7 +50,7 @@
         language: null,
         code: monacoText,
         selection: null
-      });
+      }, requestId);
       return true;
     }
 
@@ -109,7 +109,7 @@
     return best?.trim() ? best : null;
   }
 
-  function tryCodeMirror(): boolean {
+  function tryCodeMirror(requestId?: string): boolean {
     const view = findCodeMirrorView();
     if (view?.state?.doc) {
       const code = String(view.state.doc);
@@ -120,7 +120,7 @@
           language: null,
           code,
           selection: main ? { start: main.from, end: main.to } : null
-        });
+        }, requestId);
         return true;
       }
     }
@@ -147,7 +147,7 @@
         language: null,
         code: areaValue,
         selection: null
-      });
+      }, requestId);
       return true;
     }
 
@@ -156,7 +156,7 @@
       language: null,
       code: lines,
       selection: null
-    });
+    }, requestId);
     return true;
   }
 
@@ -196,7 +196,7 @@
     return null;
   }
 
-  function tryAce(): boolean {
+  function tryAce(requestId?: string): boolean {
     const ace = (window as unknown as { ace?: any }).ace;
     const editor = ace?.edit?.(document.querySelector(".ace_editor"));
     if (!editor) {
@@ -213,24 +213,24 @@
     const start = doc?.positionToIndex?.(selection?.start, 0) ?? 0;
     const end = doc?.positionToIndex?.(selection?.end, 0) ?? code.length;
 
-    postSnapshot({ source: "ace", language: null, code, selection: { start, end } });
+    postSnapshot({ source: "ace", language: null, code, selection: { start, end } }, requestId);
     return true;
   }
 
-  function scan() {
+  function scan(requestId?: string) {
     const monacoInputText = readMonacoInputAreaText();
     const hasMonacoInputText = Boolean(monacoInputText?.trim());
     if (hasMonacoInputText && monacoInputText) {
-      postSnapshot({ source: "monaco", language: null, code: monacoInputText, selection: null });
+      postSnapshot({ source: "monaco", language: null, code: monacoInputText, selection: null }, requestId);
     }
 
     const captured =
-      tryMonaco() ||
+      tryMonaco(requestId) ||
       hasMonacoInputText ||
-      tryCodeMirror() ||
-      tryAce();
+      tryCodeMirror(requestId) ||
+      tryAce(requestId);
     if (!captured) {
-      window.postMessage({ source: SOURCE, type: "CODE_SNAPSHOT_UNAVAILABLE" }, "*");
+      window.postMessage({ source: SOURCE, type: "CODE_SNAPSHOT_UNAVAILABLE", requestId }, "*");
     }
   }
 
@@ -278,7 +278,7 @@
         return;
       }
       if (message.type === "REQUEST_CODE_SNAPSHOT") {
-        scan();
+        scan(typeof message.requestId === "string" ? message.requestId : undefined);
       }
     } catch (error) {
       console.debug("[Edgecase][bridge] pageBridge message handler failed", error);
